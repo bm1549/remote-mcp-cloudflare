@@ -71,6 +71,8 @@ export class YourMCP extends McpAgent<WorkerEnv> {
 export default createOAuthWorker(YourMCP);
 ```
 
+A full template lives at [`wrangler.example.jsonc`](./wrangler.example.jsonc) — copy it into your consumer repo and fill in the placeholders. Minimal shape:
+
 ```jsonc
 // wrangler.jsonc
 {
@@ -85,11 +87,20 @@ export default createOAuthWorker(YourMCP);
     "kv_namespaces": [
         { "binding": "OAUTH_KV", "id": "REPLACE_WITH_YOUR_KV_ID" }
     ],
+    "ratelimits": [
+        {
+            "name": "REGISTER_LIMITER",
+            "namespace_id": "1001",
+            "simple": { "limit": 10, "period": 60 }
+        }
+    ],
     "observability": { "enabled": true }
 }
 ```
 
 The DO class name (`YourMCP`) must match between the exported class, the migration entry, and the durable_objects binding.
+
+`REGISTER_LIMITER` is optional. If present, `createOAuthWorker` rate-limits `POST /register` per `cf-connecting-ip` before delegating to the OAuth provider. Without it, `/register` is unauthenticated and unbounded (per the MCP spec).
 
 ### Constraints on the wrapped MCP server
 
@@ -137,7 +148,7 @@ Other notes:
 
 - **OAuth grants in KV carry no secrets.** The Durable Object reads sensitive credentials from `this.env` directly, so `completeAuthorization` is called with `props: {}` and KV never sees your wrapped server's tokens.
 - **Dynamic Client Registration is unauthenticated** at `/register`, per the MCP spec. Owning a `client_id` alone grants nothing — both gates above still apply.
-- **No rate limiting** is configured. If your worker is publicly addressable, add a Cloudflare Rate Limiting rule on `/register` to prevent KV-quota abuse.
+- **`/register` rate limiting is opt-in** via the `REGISTER_LIMITER` binding. Recommended for any publicly addressable worker to prevent KV-quota abuse. Other routes are not rate-limited by this library — add Cloudflare dashboard rules if you need broader coverage.
 - **All MCP tools are equally accessible** to any authorized session. There's no per-tool ACL. If your wrapped server exposes destructive operations, gate them inside the tool's handler.
 
 ## License

@@ -9,6 +9,7 @@ export interface BaseEnv {
     GOOGLE_CLIENT_SECRET: string;
     ALLOWED_EMAILS: string;
     STATE_SECRET: string;
+    REGISTER_LIMITER?: RateLimit;
 }
 
 interface McpAgentClass {
@@ -28,13 +29,40 @@ export function createOAuthWorker(
     options: CreateOAuthWorkerOptions = {},
 ) {
     const apiRoute = options.apiRoute ?? "/mcp";
-    return new OAuthProvider({
+    const registerRoute =
+        options.clientRegistrationEndpoint ?? "/register";
+    const oauth = new OAuthProvider({
         apiRoute,
         apiHandler: AgentClass.serve(apiRoute) as never,
         defaultHandler: authApp as never,
         authorizeEndpoint: options.authorizeEndpoint ?? "/authorize",
         tokenEndpoint: options.tokenEndpoint ?? "/token",
-        clientRegistrationEndpoint:
-            options.clientRegistrationEndpoint ?? "/register",
+        clientRegistrationEndpoint: registerRoute,
     });
+
+    return {
+        async fetch(
+            request: Request,
+            env: BaseEnv,
+            ctx: ExecutionContext,
+        ): Promise<Response> {
+            if (env.REGISTER_LIMITER) {
+                const url = new URL(request.url);
+                if (url.pathname === registerRoute) {
+                    const key =
+                        request.headers.get("cf-connecting-ip") ?? "anon";
+                    const { success } = await env.REGISTER_LIMITER.limit({
+                        key,
+                    });
+                    if (!success) {
+                        return new Response("Too many requests", {
+                            status: 429,
+                            headers: { "content-type": "text/plain" },
+                        });
+                    }
+                }
+            }
+            return oauth.fetch(request, env, ctx);
+        },
+    };
 }

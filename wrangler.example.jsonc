@@ -1,0 +1,38 @@
+// Template wrangler.jsonc for a consumer worker built on remote-mcp-cloudflare.
+// Copy to your consumer repo as wrangler.jsonc, then fill in the placeholders.
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "your-mcp",
+    "main": "src/worker.ts",
+    "compatibility_date": "2025-03-10",
+    "compatibility_flags": ["nodejs_compat"],
+
+    // Durable Object class name must match the McpAgent subclass you export.
+    "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["YourMCP"] }
+    ],
+    "durable_objects": {
+        "bindings": [
+            { "name": "MCP_OBJECT", "class_name": "YourMCP" }
+        ]
+    },
+
+    // KV store used by @cloudflare/workers-oauth-provider for grants/tokens.
+    // Run `wrangler kv namespace create OAUTH_KV` and paste the id here.
+    "kv_namespaces": [
+        { "binding": "OAUTH_KV", "id": "REPLACE_WITH_YOUR_KV_ID" }
+    ],
+
+    // Optional: rate-limit POST /register to prevent unauthenticated KV abuse.
+    // If this binding is present, createOAuthWorker enforces it per cf-connecting-ip.
+    // namespace_id is any positive integer you choose; pick a unique one per account.
+    "ratelimits": [
+        {
+            "name": "REGISTER_LIMITER",
+            "namespace_id": "1001",
+            "simple": { "limit": 10, "period": 60 }
+        }
+    ],
+
+    "observability": { "enabled": true }
+}
