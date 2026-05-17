@@ -3,24 +3,36 @@
     "version": "0.1.0",
     "private": true,
     "type": "module",
-    "description": "Generic Cloudflare Worker template that wraps a stdio MCP server with Google OAuth and exposes it as a remote MCP endpoint.",
+    "description": "Library for wrapping a stdio MCP server in a Cloudflare Worker with Google OAuth + email allowlist. Exposes the server as a remote MCP endpoint for Claude Desktop / mobile.",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "dist",
+        "src",
+        "tsconfig.json"
+    ],
     "scripts": {
-        "dev": "wrangler dev",
-        "deploy": "wrangler deploy",
+        "build": "tsc",
         "typecheck": "tsc --noEmit",
-        "cf-typegen": "wrangler types"
+        "prepare": "tsc"
     },
     "dependencies": {
-        "@akutishevsky/lunchmoney-mcp": "github:bm1549/lunchmoney-mcp#template-deploy",
         "@cloudflare/workers-oauth-provider": "^0.4.0",
-        "@modelcontextprotocol/sdk": "^1.0.0",
-        "agents": "^0.12.3",
-        "zod": "^4.0.0"
+        "agents": "^0.12.3"
+    },
+    "peerDependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0"
     },
     "devDependencies": {
         "@cloudflare/workers-types": "^4.20250404.0",
-        "@types/node": "^22.0.0",
-        "typescript": "^5.4.0",
-        "wrangler": "^4.87.0"
+        "@modelcontextprotocol/sdk": "^1.0.0",
+        "typescript": "^5.4.0"
     }
 }
