@@ -1,6 +1,7 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import { signHmac, verifyHmac } from "./crypto.js";
 
-interface AppEnv {
+export interface AppEnv {
     OAUTH_PROVIDER: OAuthHelpers;
     GOOGLE_CLIENT_ID: string;
     GOOGLE_CLIENT_SECRET: string;
@@ -10,89 +11,73 @@ interface AppEnv {
 
 interface OAuthReqInfo {
     scope?: string[];
+    codeChallenge?: string;
     [key: string]: unknown;
 }
 
-interface SignedPayload {
+interface StatePayload {
     oauthReqInfo: OAuthReqInfo;
-    exp: number;
 }
 
 interface GoogleTokenResponse {
     access_token: string;
 }
 
-interface GoogleUserInfo {
+/**
+ * Userinfo returned by Google's `/v1/userinfo` endpoint. Consumers' resolveUser
+ * hooks may need `name`, `picture`, `hd`, etc., so we deliberately keep this
+ * loose with an index signature.
+ */
+export interface GoogleUserInfo {
+    sub?: string;
     email?: string;
     email_verified?: boolean;
+    [key: string]: unknown;
+}
+
+export type ResolveUserResult =
+    | { userId: string; props: Record<string, unknown> }
+    | { redirect: string; resumeToken: string }
+    | { reject: string };
+
+export type ResolveUserFn = (
+    userinfo: GoogleUserInfo,
+    env: AppEnv,
+    request: Request,
+) => Promise<ResolveUserResult>;
+
+export type RouteHandler = (
+    request: Request,
+    env: AppEnv,
+    ctx: ExecutionContext,
+) => Promise<Response>;
+
+export interface AuthAppOptions {
+    /**
+     * Controls what string becomes the `userId` passed to
+     * `OAUTH_PROVIDER.completeAuthorization` by the *default* resolver.
+     * Ignored when `resolveUser` is supplied — that hook returns its own
+     * `userId`. Default: `"email"`.
+     */
+    userIdSource?: "email" | "sub";
+    /**
+     * Replaces the default "check email_verified + ALLOWED_EMAILS, return
+     * {userId: email, props: {}}" behavior. See {@link ResolveUserResult}.
+     */
+    resolveUser?: ResolveUserFn;
+    /**
+     * Custom route handlers, matched on exact pathname AFTER the built-in
+     * `/`, `/authorize`, and `/authorize/callback` routes and BEFORE the 404.
+     */
+    routes?: Record<string, RouteHandler>;
+    /**
+     * When true, `/authorize` requires the OAuth client to supply a PKCE
+     * `code_challenge`. Used by `createOAuthWorker`'s `registerPolicy`.
+     */
+    requirePkceAtAuthorize?: boolean;
 }
 
 const STATE_TTL_SECONDS = 600;
-
-function bytesToHex(buffer: ArrayBuffer): string {
-    return Array.from(new Uint8Array(buffer))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-}
-
-function hexToBytes(hex: string): ArrayBuffer {
-    const matches = hex.match(/.{2}/g) ?? [];
-    const buf = new ArrayBuffer(matches.length);
-    const view = new Uint8Array(buf);
-    matches.forEach((b, i) => {
-        view[i] = parseInt(b, 16);
-    });
-    return buf;
-}
-
-async function getHmacKey(secret: string): Promise<CryptoKey> {
-    return crypto.subtle.importKey(
-        "raw",
-        new TextEncoder().encode(secret),
-        { name: "HMAC", hash: "SHA-256" },
-        false,
-        ["sign", "verify"],
-    );
-}
-
-async function signState(
-    secret: string,
-    payload: SignedPayload,
-): Promise<string> {
-    const body = btoa(JSON.stringify(payload));
-    const key = await getHmacKey(secret);
-    const sig = await crypto.subtle.sign(
-        "HMAC",
-        key,
-        new TextEncoder().encode(body),
-    );
-    return `${body}.${bytesToHex(sig)}`;
-}
-
-async function verifyState(
-    secret: string,
-    state: string,
-): Promise<SignedPayload | null> {
-    const dot = state.lastIndexOf(".");
-    if (dot < 0) return null;
-    const body = state.slice(0, dot);
-    const sigHex = state.slice(dot + 1);
-    const key = await getHmacKey(secret);
-    const valid = await crypto.subtle.verify(
-        "HMAC",
-        key,
-        hexToBytes(sigHex),
-        new TextEncoder().encode(body),
-    );
-    if (!valid) return null;
-    try {
-        const payload = JSON.parse(atob(body)) as SignedPayload;
-        if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-        return payload;
-    } catch {
-        return null;
-    }
-}
 
 function callbackUrl(request: Request): string {
     return new URL("/authorize/callback", request.url).toString();
@@ -101,18 +86,30 @@ function callbackUrl(request: Request): string {
 async function startGoogleAuth(
     env: AppEnv,
     request: Request,
+    options: AuthAppOptions,
 ): Promise<Response> {
     const oauthReqInfo = (await env.OAUTH_PROVIDER.parseAuthRequest(
         request,
     )) as unknown as OAuthReqInfo;
-    const state = await signState(env.STATE_SECRET, {
-        oauthReqInfo,
-        exp: Math.floor(Date.now() / 1000) + STATE_TTL_SECONDS,
-    });
+
+    if (options.requirePkceAtAuthorize && !oauthReqInfo.codeChallenge) {
+        return new Response(
+            "PKCE required: client must supply code_challenge",
+            { status: 400 },
+        );
+    }
+
+    const state = await signHmac<StatePayload>(
+        env.STATE_SECRET,
+        { oauthReqInfo },
+        STATE_TTL_SECONDS,
+    );
     const googleUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     googleUrl.searchParams.set("client_id", env.GOOGLE_CLIENT_ID);
     googleUrl.searchParams.set("redirect_uri", callbackUrl(request));
     googleUrl.searchParams.set("response_type", "code");
+    // `openid email` already includes `sub` in the userinfo response — no
+    // scope change needed when consumers opt into `userIdSource: "sub"`.
     googleUrl.searchParams.set("scope", "openid email");
     googleUrl.searchParams.set("state", state);
     googleUrl.searchParams.set("access_type", "online");
@@ -120,9 +117,30 @@ async function startGoogleAuth(
     return Response.redirect(googleUrl.toString(), 302);
 }
 
+async function defaultResolveUser(
+    userinfo: GoogleUserInfo,
+    env: AppEnv,
+    userIdSource: "email" | "sub",
+): Promise<ResolveUserResult> {
+    const email = userinfo.email?.toLowerCase();
+    if (!email || !userinfo.email_verified) {
+        return { reject: "Email not verified by Google" };
+    }
+    const allowed = env.ALLOWED_EMAILS.split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+    if (!allowed.includes(email)) {
+        return { reject: `Forbidden: ${email} is not authorized` };
+    }
+    const userId =
+        userIdSource === "sub" ? (userinfo.sub ?? email) : email;
+    return { userId, props: {} };
+}
+
 async function finishGoogleAuth(
     env: AppEnv,
     request: Request,
+    options: AuthAppOptions,
 ): Promise<Response> {
     const url = new URL(request.url);
     const errorParam = url.searchParams.get("error");
@@ -136,7 +154,7 @@ async function finishGoogleAuth(
     if (!code || !state) {
         return new Response("Missing code or state", { status: 400 });
     }
-    const payload = await verifyState(env.STATE_SECRET, state);
+    const payload = await verifyHmac<StatePayload>(env.STATE_SECRET, state);
     if (!payload) {
         return new Response("Invalid or expired state", { status: 400 });
     }
@@ -169,50 +187,73 @@ async function finishGoogleAuth(
     }
     const userinfo = (await userResp.json()) as GoogleUserInfo;
 
-    const email = userinfo.email?.toLowerCase();
-    if (!email || !userinfo.email_verified) {
-        return new Response("Email not verified by Google", { status: 403 });
+    const userIdSource = options.userIdSource ?? "email";
+    const resolved = options.resolveUser
+        ? await options.resolveUser(userinfo, env, request)
+        : await defaultResolveUser(userinfo, env, userIdSource);
+
+    if ("reject" in resolved) {
+        return new Response(resolved.reject, { status: 403 });
     }
-    const allowed = env.ALLOWED_EMAILS.split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
-    if (!allowed.includes(email)) {
-        return new Response(`Forbidden: ${email} is not authorized`, {
-            status: 403,
-        });
+    if ("redirect" in resolved) {
+        const target = new URL(resolved.redirect, request.url);
+        // Merge `rt` via URLSearchParams so existing query strings on the
+        // consumer-supplied redirect URL are preserved.
+        target.searchParams.set("rt", resolved.resumeToken);
+        return Response.redirect(target.toString(), 302);
     }
 
+    const label =
+        typeof userinfo.email === "string" ? userinfo.email : resolved.userId;
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
         request: payload.oauthReqInfo as never,
-        userId: email,
-        metadata: { label: email },
+        userId: resolved.userId,
+        metadata: { label },
         scope: payload.oauthReqInfo.scope ?? [],
-        // Intentionally empty: the Durable Object reads secrets from env directly,
-        // so KV grants don't carry a copy of any sensitive credential.
-        props: {},
+        props: resolved.props,
     });
     return Response.redirect(redirectTo, 302);
 }
 
-export default {
-    async fetch(request: Request, env: AppEnv): Promise<Response> {
-        const url = new URL(request.url);
+export function createAuthApp(options: AuthAppOptions = {}): {
+    fetch: (
+        request: Request,
+        env: AppEnv,
+        ctx: ExecutionContext,
+    ) => Promise<Response>;
+} {
+    return {
+        async fetch(
+            request: Request,
+            env: AppEnv,
+            ctx: ExecutionContext,
+        ): Promise<Response> {
+            const url = new URL(request.url);
 
-        if (url.pathname === "/authorize" && request.method === "GET") {
-            return startGoogleAuth(env, request);
-        }
-        if (
-            url.pathname === "/authorize/callback" &&
-            request.method === "GET"
-        ) {
-            return finishGoogleAuth(env, request);
-        }
-        if (url.pathname === "/") {
-            return new Response(
-                "Remote MCP server. Add this URL to claude.ai as a custom connector.",
-                { headers: { "content-type": "text/plain" } },
-            );
-        }
-        return new Response("Not found", { status: 404 });
-    },
-};
+            if (url.pathname === "/authorize" && request.method === "GET") {
+                return startGoogleAuth(env, request, options);
+            }
+            if (
+                url.pathname === "/authorize/callback" &&
+                request.method === "GET"
+            ) {
+                return finishGoogleAuth(env, request, options);
+            }
+            if (url.pathname === "/") {
+                return new Response(
+                    "Remote MCP server. Add this URL to claude.ai as a custom connector.",
+                    { headers: { "content-type": "text/plain" } },
+                );
+            }
+            const custom = options.routes?.[url.pathname];
+            if (custom) {
+                return custom(request, env, ctx);
+            }
+            return new Response("Not found", { status: 404 });
+        },
+    };
+}
+
+// Backwards-compatible default export: the original singleton, with no
+// resolveUser override and no custom routes. Behavior is identical to 0.1.1.
+export default createAuthApp();
