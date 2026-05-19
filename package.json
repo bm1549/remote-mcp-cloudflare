@@ -1,9 +1,30 @@
 {
-    "name": "remote-mcp-cloudflare",
+    "name": "@bm1549/remote-mcp-cloudflare",
     "version": "0.1.0",
-    "private": true,
     "type": "module",
     "description": "Library for wrapping a stdio MCP server in a Cloudflare Worker with Google OAuth + email allowlist. Exposes the server as a remote MCP endpoint for Claude Desktop / mobile.",
+    "license": "MIT",
+    "author": "Brian Marks <bmarks1056@gmail.com>",
+    "homepage": "https://github.com/bm1549/remote-mcp-cloudflare#readme",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/bm1549/remote-mcp-cloudflare.git"
+    },
+    "bugs": {
+        "url": "https://github.com/bm1549/remote-mcp-cloudflare/issues"
+    },
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "cloudflare-workers",
+        "oauth",
+        "google-oauth",
+        "remote-mcp"
+    ],
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
+    },
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "exports": {
