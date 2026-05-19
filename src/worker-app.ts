@@ -44,6 +44,16 @@ export type ResolveUserFn = (
     userinfo: GoogleUserInfo,
     env: AppEnv,
     request: Request,
+    /**
+     * The parsed OAuth request info that started this flow (from
+     * `OAUTH_PROVIDER.parseAuthRequest`). Consumers that bounce to a setup
+     * page typically pack this into their resume token so the post-setup
+     * step can call `resumeAuthorization` to finish the original grant.
+     *
+     * Optional purely for backwards compatibility — existing hooks that
+     * ignore this argument continue to work unchanged.
+     */
+    oauthReqInfo?: unknown,
 ) => Promise<ResolveUserResult>;
 
 export type RouteHandler = (
@@ -189,7 +199,12 @@ async function finishGoogleAuth(
 
     const userIdSource = options.userIdSource ?? "email";
     const resolved = options.resolveUser
-        ? await options.resolveUser(userinfo, env, request)
+        ? await options.resolveUser(
+              userinfo,
+              env,
+              request,
+              payload.oauthReqInfo,
+          )
         : await defaultResolveUser(userinfo, env, userIdSource);
 
     if ("reject" in resolved) {
