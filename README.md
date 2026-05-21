@@ -37,7 +37,7 @@ Most MCP servers ship as stdio binaries. Claude Desktop runs them locally; the m
 ## Install
 
 ```sh
-npm install github:bm1549/remote-mcp-cloudflare
+npm install @bm1549/remote-mcp-cloudflare
 npm install @modelcontextprotocol/sdk agents @cloudflare/workers-oauth-provider
 ```
 
@@ -51,7 +51,7 @@ Your consumer worker is two files: `wrangler.jsonc` and `src/worker.ts`.
 // src/worker.ts
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createOAuthWorker, type BaseEnv } from "remote-mcp-cloudflare";
+import { createOAuthWorker, type BaseEnv } from "@bm1549/remote-mcp-cloudflare";
 
 import { createServer } from "@your-org/your-mcp-server/server";
 import { initializeConfig } from "@your-org/your-mcp-server/config";
@@ -194,7 +194,7 @@ export default createOAuthWorker(YourMCP, {
         rejectIpHosts: true,
         maxRedirectUris: 5,
     },
-    async resolveUser(userinfo: GoogleUserInfo, env, request) {
+    async resolveUser(userinfo: GoogleUserInfo, env, _request, oauthReqInfo) {
         if (!userinfo.email_verified || !userinfo.sub) {
             return { reject: "Email not verified" };
         }
@@ -204,7 +204,6 @@ export default createOAuthWorker(YourMCP, {
         }
         // First-time user: bounce to /setup with a signed resume token
         // carrying the parsed OAuth request so we can finish later.
-        const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
         const rt = await signResumeToken(env, {
             sub: userinfo.sub,
             oauthReqInfo,
