@@ -1,5 +1,4 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import type { McpAgent } from "agents/mcp";
 import {
     createAuthApp,
     type AuthAppOptions,
@@ -35,9 +34,30 @@ export interface BaseEnv {
     REGISTER_LIMITER?: RateLimit;
 }
 
-interface McpAgentClass {
-    serve(path: string): unknown;
-    new (...args: never[]): McpAgent<BaseEnv>;
+/**
+ * The only thing this library ever needs from the MCP side: something that can
+ * hand back a fetch handler for the API route.
+ *
+ * Historically this was typed as an `McpAgent` subclass, which forced every
+ * consumer onto `agents`' `McpAgent`. That class is deprecated and
+ * feature-frozen upstream as of `agents@0.20.0` (it is MCP SDK v1 / protocol
+ * sessions only), and MCP revision 2026-07-28 removed protocol sessions
+ * outright — so a server on the modern path has no `McpAgent` to pass. The
+ * constraint is now structural: any class or object with a static/own
+ * `serve(path)` satisfies it, including one built on
+ * `createMcpHandler` from `agents/mcp/server`.
+ */
+export interface McpApiHandlerSource {
+    serve(path: string): McpApiHandler;
+}
+
+/** What `serve()` returns — the shape the OAuth provider mounts on `apiRoute`. */
+export interface McpApiHandler {
+    fetch(
+        request: Request,
+        env: never,
+        ctx: ExecutionContext,
+    ): Promise<Response>;
 }
 
 /**
@@ -71,6 +91,18 @@ export interface RegisterPolicy {
      * Maximum number of entries in the `redirect_uris` array.
      */
     maxRedirectUris?: number;
+    /**
+     * Allowed `application_type` values at DCR. MCP revision 2026-07-28
+     * (SEP-837) requires clients to declare one, so that OpenID Connect's
+     * per-type redirect-URI rules don't conflict — `"web"` forbids the
+     * `http://localhost` redirects a `"native"` client needs, and a server
+     * that can't tell them apart has to accept both for everyone.
+     *
+     * Pass e.g. `["native", "web"]` to require the field be present and be one
+     * of those. Omit for no enforcement (a client that sends nothing is
+     * accepted, matching pre-0.3.0 behavior).
+     */
+    allowedApplicationTypes?: string[];
 }
 
 export interface CreateOAuthWorkerOptions {
@@ -117,6 +149,16 @@ function validateRegisterBody(
     const redirectUris = Array.isArray(body.redirect_uris)
         ? (body.redirect_uris as unknown[])
         : null;
+
+    if (policy.allowedApplicationTypes) {
+        const appType = body.application_type;
+        if (typeof appType !== "string") {
+            return "application_type is required";
+        }
+        if (!policy.allowedApplicationTypes.includes(appType)) {
+            return `application_type not allowed: ${appType}`;
+        }
+    }
 
     if (
         policy.maxRedirectUris !== undefined &&
@@ -183,7 +225,7 @@ function validateRegisterBody(
 }
 
 export function createOAuthWorker(
-    AgentClass: McpAgentClass,
+    AgentClass: McpApiHandlerSource,
     options: CreateOAuthWorkerOptions = {},
 ) {
     const apiRoute = options.apiRoute ?? "/mcp";
@@ -214,7 +256,8 @@ export function createOAuthWorker(
         !!registerPolicy &&
         (registerPolicy.allowedRedirectSchemes !== undefined ||
             registerPolicy.rejectIpHosts === true ||
-            registerPolicy.maxRedirectUris !== undefined);
+            registerPolicy.maxRedirectUris !== undefined ||
+            registerPolicy.allowedApplicationTypes !== undefined);
 
     return {
         async fetch(
