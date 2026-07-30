@@ -1,6 +1,6 @@
 {
     "name": "@bm1549/remote-mcp-cloudflare",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "type": "module",
     "description": "Library for wrapping a stdio MCP server in a Cloudflare Worker with Google OAuth + email allowlist. Exposes the server as a remote MCP endpoint for Claude Desktop / mobile.",
     "license": "MIT",
@@ -45,15 +45,10 @@
         "prepare": "tsc"
     },
     "dependencies": {
-        "@cloudflare/workers-oauth-provider": "^0.4.0",
-        "agents": "^0.12.3"
-    },
-    "peerDependencies": {
-        "@modelcontextprotocol/sdk": "^1.0.0"
+        "@cloudflare/workers-oauth-provider": "^0.8.3"
     },
     "devDependencies": {
         "@cloudflare/workers-types": "^4.20250404.0",
-        "@modelcontextprotocol/sdk": "^1.0.0",
         "typescript": "^5.4.0"
     }
 }
